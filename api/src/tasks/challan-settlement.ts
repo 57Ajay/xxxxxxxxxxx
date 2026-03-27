@@ -4,6 +4,7 @@ export const challanSettlement: Task = {
     id: "challan-settlement",
     name: "Challan Settlement Automation",
     requiredParams: ["vehicleNumber"],
+    optionalParams: ["mobileNumber", "chassisLastFour", "engineLastFour"],
     tools: [
         {
             name: "save_challans",
@@ -38,7 +39,47 @@ export const challanSettlement: Task = {
             method: "POST",
         },
     ],
-    buildPrompt: (p) => `
+    buildPrompt: (p) => {
+        const hasMobileChange =
+            p.mobileNumber && p.chassisLastFour && p.engineLastFour;
+
+        const mobileChangeBlock = hasMobileChange
+            ? `
+========================================
+PHASE 0: CHANGE MOBILE NUMBER (before OTP)
+========================================
+After you enter the vehicle number and click "Search Details", an OTP dialog will appear.
+DO NOT enter the OTP yet. Instead:
+
+1. Click the "Change mobile Number" link inside the OTP dialog.
+2. A "Change Mobile Number" form will appear with these fields:
+   - "New Mobile Number" → type: ${p.mobileNumber}
+   - "Confirm Mobile Number" → type: ${p.mobileNumber}
+   - "Last Four digit of Chasis Number" (next to the partial chassis shown) → type: ${p.chassisLastFour}
+   - "Last Four digit of Engine Number" (next to the partial engine shown) → type: ${p.engineLastFour}
+3. Click the "Submit" button (green button) on this form.
+4. A NEW OTP will now be sent to ${p.mobileNumber}.
+5. Call wait_for_human with reason:
+   "OTP required — sent to NEW mobile number ${p.mobileNumber}. Please enter the OTP in the browser and click submit, then send 'done'."
+6. After the human responds, the mobile number is now changed. Continue to Phase 1 results extraction.
+
+IMPORTANT: After the mobile number change + OTP submission, the site should show the challan results.
+If it shows the original OTP dialog again (for the old number), the mobile change was successful —
+a new OTP has been sent to ${p.mobileNumber}. Enter that OTP and submit.
+`
+            : "";
+
+        const otpInstructions = hasMobileChange
+            ? `If the site asks for a mobile number or OTP and you have NOT yet changed the mobile number:
+- Follow PHASE 0 above to change the mobile number first.
+If you have ALREADY changed the mobile number and an OTP dialog appears:
+- Call wait_for_human with reason "OTP required on Delhi Traffic Police — sent to ${p.mobileNumber}. Please enter the OTP in the browser and click submit, then send 'done'."
+- After the human responds, continue from the results page.`
+            : `If the site asks for a mobile number or OTP:
+- Call wait_for_human with reason "OTP required on Delhi Traffic Police site. Please enter the OTP in the browser and click submit, then send 'done' via the intervene API."
+- After the human responds, continue from the results page.`;
+
+        return `
 You are automating a challan extraction workflow across 2 websites.
 
 IMPORTANT RULES:
@@ -48,7 +89,8 @@ IMPORTANT RULES:
 - Use separate browser tabs for each site. Never close a tab until the entire workflow is done.
 
 VEHICLE: ${p.vehicleNumber}
-
+${hasMobileChange ? `TARGET MOBILE: ${p.mobileNumber}` : ""}
+${mobileChangeBlock}
 ========================================
 PHASE 1: DELHI TRAFFIC POLICE — Extract Challans
 ========================================
@@ -57,9 +99,7 @@ Open a tab and go to: https://traffic.delhipolice.gov.in/notice/pay-notice/
 - Type ${p.vehicleNumber} in the "Vehicle Number" field
 - Click "Search Details"
 
-If the site asks for a mobile number or OTP:
-- Call wait_for_human with reason "OTP required on Delhi Traffic Police site. Please enter the OTP in the browser and click submit, then send 'done' via the intervene API."
-- After the human responds, continue from the results page.
+${otpInstructions}
 
 After results load, extract EVERY challan:
 - Challan ID (full number)
@@ -126,34 +166,55 @@ page — this is normal website behavior. IGNORE IT. Never interact with the
 CAPTCHA field or submit button again after records appear. Your ONLY job now
 is to extract the data from the records table.
 
-Step 2c — Extract discount data:
+Step 2c — Extract data from Virtual Courts records:
 
 THIS IS THE MOST IMPORTANT STEP. Do not skip it. Do not re-solve CAPTCHA instead of doing this.
 
-Look at the records table on screen. For each record/row, extract:
-- The challan number (look for columns like "Challan No", "Notice No", or similar)
-- The compounding/settlement/payable amount (this is the discounted amount to pay)
-- The original fine amount if shown
+The Virtual Courts page shows records in this structure:
+- A summary row per record showing: Case No., Challan No., Party Name, Mobile No., and a "View" link
+- When you click "View" or if details are already expanded, you see:
+  - Offence Code, Offence description, Act/Section
+  - "Fine" column — this is the ORIGINAL fine amount
+  - "Proposed Fine" row at the bottom — this is the SETTLEMENT/DISCOUNT amount to pay
 
-Read EVERY row. Scroll down if needed. Check for pagination.
+IMPORTANT: The page does NOT label anything as "discount". The discount is implied:
+  - "Fine" = original amount
+  - "Proposed Fine" = settlement amount (what the person actually pays)
+  - Even if Fine == Proposed Fine (no reduction), you MUST still extract and save it.
 
-If the table shows records but no discount/settlement amounts are visible for any row,
-that means there are no discounts available. Skip the save_discounts call.
+For EVERY record on the page:
+1. Extract the Challan No. (e.g., "67940444" from "Challan No. : 67940444")
+2. Extract the "Fine" value — this is the originalAmount
+3. Extract the "Proposed Fine" value — this is the discountAmount (settlement amount)
+4. If details are collapsed, click "View" to expand them first
 
-If discount amounts ARE found, you MUST call "save_discounts" with a JSON array.
-Each object must have: challanId, discountAmount (the settlement/compounding amount), originalAmount.
-Example: [{"challanId":"DL123456","discountAmount":250,"originalAmount":500}]
+Read EVERY row. Scroll down if needed. Check for pagination ("No. of Records" text).
 
-DO NOT proceed to completion without calling save_discounts if any discount data exists.
+╔══════════════════════════════════════════════════════════════════╗
+║  RULE: If ANY records exist on Virtual Courts, you MUST call     ║
+║  save_discounts. NEVER skip it when records are visible.         ║
+║  Even if Proposed Fine == Fine (no reduction), STILL save it.    ║
+╚══════════════════════════════════════════════════════════════════╝
+
+Call "save_discounts" with a JSON array. Each object must have:
+- challanId: the challan number from the record
+- discountAmount: the "Proposed Fine" value (settlement amount)
+- originalAmount: the "Fine" value
+
+Example: [{"challanId":"67940444","discountAmount":1000,"originalAmount":1000}]
+
+DO NOT proceed to completion without calling save_discounts if ANY records exist.
 DO NOT go back to the CAPTCHA. DO NOT refresh the page. Extract what is on screen and save it.
 
 ========================================
 COMPLETION
 ========================================
 Only NOW use the "done" action. Report:
+${hasMobileChange ? "- Whether the mobile number was changed successfully" : ""}
 - How many challans were found on Delhi Traffic Police
 - How many were saved via save_challans
-- How many had discount amounts from Virtual Courts
-- How many were saved via save_discounts
-  `.trim(),
+- How many records were found on Virtual Courts
+- How many were saved via save_discounts (with their Proposed Fine and Fine amounts)
+`.trim();
+    },
 };
