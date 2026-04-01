@@ -87,6 +87,7 @@ IMPORTANT RULES:
 - You have tools "save_challans" and "save_discounts" to save extracted data. Use them as described below.
 - Do NOT end the task until ALL phases are complete.
 - Use separate browser tabs for each site. Never close a tab until the entire workflow is done.
+- NEVER use JavaScript evaluate() to scrape or extract data from a page. Always read data visually from the screen.
 
 VEHICLE: ${p.vehicleNumber}
 ${hasMobileChange ? `TARGET MOBILE: ${p.mobileNumber}` : ""}
@@ -120,55 +121,52 @@ PHASE 2: VIRTUAL COURTS — Extract Discounts
 ========================================
 Open a NEW TAB and go to: https://vcourts.gov.in/virtualcourt/index.php
 
-Step 1 — Select department:
-- You will see a "Select Department" dropdown and a "Proceed Now" button.
-- Open the dropdown and select the appropiate department for vehicle: ${p.vehicleNumber}.
- - Example:
-  - DL vehicles --> "Delhi(Notice Department)"
-  - HR vehicles --> "Haryana(Traffic Department)"
-  - UP vehicles --> look for the matching UP department
-- Click "Proceed Now".
+STEP A — Select department and proceed:
+You will see a "Select Department" dropdown and a "Proceed Now" button.
+Select the correct department for vehicle ${p.vehicleNumber}:
+  DL, HR → "Delhi(Traffic Department)"
+  UP → matching UP department
+  Other → pick the matching Traffic/Transport department for the state.
+Click "Proceed Now".
 
-Step 2 — Navigate to vehicle search:
-- You will land on a page with 4 tab buttons on the LEFT side arranged in a 2x2 grid:
-  "Mobile Number", "CNR Number", "Party Name", "Challan/Vehicle No."
-- Click the "Challan/Vehicle No." tab button (bottom-right of the grid).
-- The right side will now show a form with: Challan Number field, Vehicle Number field, a CAPTCHA image, an "Enter Captcha" field, and a "Submit" button.
+STEP B — Search by vehicle number:
+A new page loads with 4 tab buttons: "Mobile Number", "CNR Number", "Party Name", "Challan/Vehicle No."
+Click "Challan/Vehicle No.".
+Type ${p.vehicleNumber} in the "Vehicle Number" field.
+Read the CAPTCHA image and type what you see in the "Enter Captcha" field.
+Click "Submit".
+If CAPTCHA fails, try again (up to 5 attempts).
+After 5 failures, call wait_for_human: "CAPTCHA needs solving on Virtual Courts. Please solve it, click submit, then send 'done'."
 
-Step 3 — Fill form and submit:
-- Type ${p.vehicleNumber} in the "Vehicle Number" field.
-- Read the CAPTCHA image and type it in the "Enter Captcha" field.
-- Click "Submit".
-- If CAPTCHA was wrong, the page reloads with a new CAPTCHA. Try again (up to 5 attempts).
-- If you cannot solve it after 5 attempts, call 'wait_for_human' with reason:
-  "CAPTCHA needs solving on Virtual Courts. Please solve it and click submit, then send 'done'."
+STEP C — Extract results:
 
-Step 4 — Extract records:
-- After successful submit, you will see "No. of Records :- N" (N is number of records) and a table below.
-- If records are already visible, do NOT touch the CAPTCHA again — ignore it.
-- Each record has a summary row with Case No., Challan No., Party Name, and a "View" link.
-- For EVERY record, extract:
-  - challanId: the Challan No. from the summary row (e.g. "57113282")
-  - originalAmount: the Fine value from the inner table
-  - discountAmount: the Proposed Fine value
-- Scroll down to check ALL records.
-Example:
-[{"challanId":"DL123456","discountAmount":250,"originalAmount":500}, ...]
-Step 5 — Save:
-- Call "save_discounts" with ALL extracted records as an array.
-- Even if Fine == Proposed Fine (no discount), still include that record.
-- If there are zero records, skip this step.
+*** CRITICAL: Before EVER touching the CAPTCHA form, FIRST scroll down and look at the page. If you see text "No. of Records" followed by a number >= 1 and a results table is visible, the data is ALREADY loaded — do NOT re-submit the CAPTCHA. Skip straight to reading the table below. ***
+
+Once results are visible, you will see "No. of Records :- N" and a table with columns: Sr.No., Offence Details, View.
+
+For each row:
+1. Click the "View" link to expand that record (if not already expanded).
+2. Read the "Challan No." from the row — this is your challanId.
+3. In the expanded section, find the "Fine" column — this number is your originalAmount.
+4. Below the expanded section, find "Proposed Fine" — this number is your discountAmount.
+
+Scroll through the entire page to make sure you have read every record.
+Include every record, even if Fine and Proposed Fine are the same amount.
+If "No. of Records :- 0", skip to COMPLETION.
+
+STEP D — Save:
+Call "save_discounts" with all records:
+[{"challanId":"DL19016240430095546","discountAmount":300,"originalAmount":300}]
 
 ========================================
 COMPLETION
 ========================================
-
 Only NOW use the "done" action. Report:
 ${hasMobileChange ? "- Whether the mobile number was changed successfully" : ""}
 - How many challans were found on Delhi Traffic Police
 - How many were saved via save_challans
 - How many records were found on Virtual Courts
-- How many were saved via save_discounts (with their Proposed Fine and Fine amounts)
+- How many were saved via save_discounts
 `.trim();
     },
 };

@@ -148,24 +148,52 @@ const server = Bun.serve({
 
             if (req.method === "POST" && url.pathname === "/api/internal/challans/save") {
                 try {
-                    const body = await req.json() as InternalRequest;
+                    const raw = await req.text();
+                    console.log(`[API] POST /api/internal/challans/save | body length=${raw.length}`);
+                    console.log(`[API]   body preview: ${raw.substring(0, 500)}`);
+
+                    let body: InternalRequest;
+                    try {
+                        body = JSON.parse(raw) as InternalRequest;
+                    } catch (parseErr) {
+                        console.log(`[API]   FAIL: body is not valid JSON`);
+                        return Response.json({ ok: false, error: "Request body is not valid JSON" }, { status: 400 });
+                    }
+
+                    console.log(`[API]   jobId=${body.jobId} params=${JSON.stringify(body.params)} dataType=${typeof body.data} isArray=${Array.isArray(body.data)}`);
+
                     const result = await handleSaveChallans(body);
                     const status = result.ok ? 200 : 400;
+                    console.log(`[API]   result: ${JSON.stringify(result)}`);
                     return Response.json(result, { status });
                 } catch (e: any) {
-                    console.error("[ERROR] save_challans:", e);
+                    console.error("[API] ERROR save_challans:", e);
                     return Response.json({ ok: false, error: e.message }, { status: 500 });
                 }
             }
 
             if (req.method === "POST" && url.pathname === "/api/internal/discounts/save") {
                 try {
-                    const body = await req.json() as InternalRequest;
+                    const raw = await req.text();
+                    console.log(`[API] POST /api/internal/discounts/save | body length=${raw.length}`);
+                    console.log(`[API]   body preview: ${raw.substring(0, 500)}`);
+
+                    let body: InternalRequest;
+                    try {
+                        body = JSON.parse(raw) as InternalRequest;
+                    } catch (parseErr) {
+                        console.log(`[API]   FAIL: body is not valid JSON`);
+                        return Response.json({ ok: false, error: "Request body is not valid JSON" }, { status: 400 });
+                    }
+
+                    console.log(`[API]   jobId=${body.jobId} params=${JSON.stringify(body.params)} dataType=${typeof body.data} isArray=${Array.isArray(body.data)}`);
+
                     const result = await handleSaveDiscounts(body);
                     const status = result.ok ? 200 : 400;
+                    console.log(`[API]   result: ${JSON.stringify(result)}`);
                     return Response.json(result, { status });
                 } catch (e: any) {
-                    console.error("[ERROR] save_discounts:", e);
+                    console.error("[API] ERROR save_discounts:", e);
                     return Response.json({ ok: false, error: e.message }, { status: 500 });
                 }
             }
