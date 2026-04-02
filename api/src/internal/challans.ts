@@ -113,7 +113,7 @@ export async function handleSaveChallans(body: InternalRequest) {
 
     const docRef = snapshot.docs[0]!.ref;
     const docData = snapshot.docs[0]!.data();
-    const existingChallans: any[] = docData.challans || [];
+    const existingChallans: any[] = docData.challansDraft || [];
 
     console.log(`[save_challans] doc=${snapshot.docs[0]!.id} existing challans=${existingChallans.length}`);
 
@@ -142,7 +142,7 @@ export async function handleSaveChallans(body: InternalRequest) {
     });
 
     await docRef.update({
-        challans: mergedChallans,
+        challansDraft: mergedChallans,
         updatedAt: FieldValue.serverTimestamp(),
     });
 

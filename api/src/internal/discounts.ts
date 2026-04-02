@@ -109,7 +109,7 @@ export async function handleSaveDiscounts(body: InternalRequest) {
 
     const docRef = snapshot.docs[0]!.ref;
     const docData = snapshot.docs[0]!.data();
-    const existingChallans: any[] = docData.challans || [];
+    const existingChallans: any[] = docData.challansDraft || [];
 
     console.log(`[save_discounts] doc=${snapshot.docs[0]!.id} existing challans=${existingChallans.length}`);
 
@@ -232,8 +232,8 @@ export async function handleSaveDiscounts(body: InternalRequest) {
 
     // Update main request doc
     await docRef.update({
-        challans: updatedChallans,
-        status: "amountAdded",
+        challansDraft: updatedChallans,
+        challansUpdatedBy: "agent",
         totalSettlementAmount,
         updatedAt: FieldValue.serverTimestamp(),
         paymentValidTill: Timestamp.fromDate(
