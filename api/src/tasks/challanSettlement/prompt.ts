@@ -1,50 +1,15 @@
-import type { Task } from "./types";
+import { challanRequestsRef } from "../../firebase";
 
-export const challanSettlement: Task = {
-    id: "challan-settlement",
-    name: "Challan Settlement Automation",
-    requiredParams: ["vehicleNumber"],
-    optionalParams: ["mobileNumber", "chassisLastFour", "engineLastFour"],
-    tools: [
-        {
-            name: "save_challans",
-            description:
-                "Save extracted challans to the database. Call this after extracting ALL challans from Delhi Traffic Police. " +
-                "Pass a JSON array of challan objects as the data parameter.",
-            parameters: {
-                data: {
-                    type: "array",
-                    description:
-                        'Array of objects, each with: challanId (string), offence (string), amount (number in Rs), date (string YYYY-MM-DD). ' +
-                        'Example: [{"challanId":"DL123456","offence":"Red Light Violation","amount":500,"date":"2024-06-15"}]',
-                },
-            },
-            endpoint: "/api/internal/challans/save",
-            method: "POST",
-        },
-        {
-            name: "save_discounts",
-            description:
-                "Save discount/settlement amounts from Virtual Courts. Call this after extracting ALL discount data from ALL departments. " +
-                "Pass a JSON array of discount objects as the data parameter.",
-            parameters: {
-                data: {
-                    type: "array",
-                    description:
-                        'Array of discount objects, each with: challanId (string), discountAmount (number in Rs), originalAmount (number in Rs). ' +
-                        'Example: [{"challanId":"DL123456","discountAmount":250,"originalAmount":500}]',
-                },
-            },
-            endpoint: "/api/internal/discounts/save",
-            method: "POST",
-        },
-    ],
-    buildPrompt: (p) => {
-        const hasMobileChange =
-            p.mobileNumber && p.chassisLastFour && p.engineLastFour;
+export const buildPrompt = async (p: Record<string, string>) => {
+    const existingDepartments = await challansFromDB(p);
 
-        const mobileChangeBlock = hasMobileChange
-            ? `
+    const hasMobileChange =
+        p.mobileNumber && p.chassisLastFour && p.engineLastFour;
+
+    const hasExtraDepts = existingDepartments.length > 0;
+
+    const mobileChangeBlock = hasMobileChange
+        ? `
 ===
 PHASE 0 — CHANGE MOBILE NUMBER
 ===
@@ -64,18 +29,31 @@ Do NOT enter OTP yet. Follow these steps in order:
 
 Note: If the old OTP dialog reappears after mobile change, a fresh OTP was sent to ${p.mobileNumber}. Enter that OTP and submit.
 `
-            : "";
+        : "";
 
-        const otpBlock = hasMobileChange
-            ? `When the site asks for OTP:
+    const otpBlock = hasMobileChange
+        ? `When the site asks for OTP:
 - If you have NOT yet changed the mobile number → follow PHASE 0 first.
 - If you ALREADY changed the mobile number → call wait_for_human with reason: "OTP sent to ${p.mobileNumber}. Please enter it and click submit, then reply done."
 - After human responds, continue extracting results.`
-            : `When the site asks for OTP:
+        : `When the site asks for OTP:
 - Call wait_for_human with reason: "OTP required on Delhi Traffic Police. Please enter the OTP, click submit, then reply done."
 - After human responds, continue extracting results.`;
 
-        return `
+    const zeroChallanInstruction = hasExtraDepts
+        ? `7. If zero challans exist, note "0 challans found on Delhi Traffic Police". Still continue to Phase 1.5 — there are pre-existing departments to query.`
+        : `7. If zero challans exist, note "0 challans found" and skip Phase 2 entirely — go to COMPLETION.`;
+
+    const extraDeptInPhase15 = hasExtraDepts
+        ? `
+ADDITIONAL DEPARTMENTS FROM DATABASE:
+Our database already has challans for this vehicle that belong to these departments:
+${existingDepartments.map(d => `  - ${d}`).join("\n")}
+You MUST add these to your department list even if no challan ID from Phase 1 maps to them.
+`
+        : "";
+
+    return `
 You are automating challan extraction for vehicle ${p.vehicleNumber} across 2 websites.
 ${hasMobileChange ? `Target mobile for OTP: ${p.mobileNumber}` : ""}
 
@@ -111,7 +89,7 @@ ${otpBlock}
    - Date (YYYY-MM-DD)
 5. Scroll down to check for more rows or pagination. Do NOT stop until every row is captured.
 6. Skip any row where amount is 0 or missing.
-7. If zero challans exist, note "0 challans found" and skip Phase 2 entirely — go to COMPLETION.
+${zeroChallanInstruction}
 
 8. Call save_challans with ALL extracted data as a JSON array.
    Example: [{"challanId":"DL19016240430095546","offence":"Red Light Violation","amount":500,"date":"2024-06-15"}]
@@ -119,13 +97,13 @@ ${otpBlock}
 ===
 PHASE 1.5 — DETERMINE VIRTUAL COURT DEPARTMENTS TO QUERY
 ===
-Look at the challan IDs you just extracted and figure out which Virtual Court departments you need to visit.
+Look at the challan IDs you extracted in Phase 1 and figure out which Virtual Court departments you need to visit.
 
 HOW TO READ A CHALLAN ID:
 - If it starts with 2 LETTERS (e.g. "DL...", "HR...", "UP...") → those 2 letters are the state code.
 - If it starts with a DIGIT or has no letter prefix (e.g. "57693177") → it belongs to Delhi(Notice Department).
 
-MAP each state code to a Virtual Courts department name using this table:
+MAP each state code to a Virtual Courts department name:
 
   DL → Delhi(Traffic Department)
   (plain digits, no letters) → Delhi(Notice Department)
@@ -153,8 +131,8 @@ MAP each state code to a Virtual Courts department name using this table:
   WB → West Bengal(Traffic Department)
   GA → Goa(Traffic Department)
   Any other code → find the matching state in the Virtual Courts dropdown.
-
-Now build a list of UNIQUE departments. Remove duplicates.
+${extraDeptInPhase15}
+Now build a list of UNIQUE departments (combine Phase 1 departments + any additional departments listed above). Remove duplicates.
 Write this in memory:
   "Departments to query: [Delhi(Traffic Department), Haryana(Traffic Department), Delhi(Notice Department), ...]"
   "Departments completed: []"
@@ -181,27 +159,32 @@ STEP B — Search:
 
 STEP C — Extract results:
 
-FIRST: Scroll down and check if results are already visible. If you see "No. of Records" with a number >= 1 and a data table, the data is already loaded — do NOT re-submit. Go straight to reading the table.
+FIRST: Scroll down and check if results are already visible. If you see "No. of Records" with a number >= 1 and a data table, the data is already loaded — do NOT re-submit the CAPTCHA form.
 
-The table has columns: Sr.No., Offence Details, View.
+If "No. of Records :- 0", note "0 records for [department name]" and skip to STEP D.
 
-For EACH row (track: "row X of N for [department name]"):
-1. Click "View" to expand the record.
-2. Read "Challan No." → this is your challanId.
-3. In the expanded section, read the "Fine" column → this is originalAmount.
-4. Below it, read "Proposed Fine" → this is discountAmount.
+PAGE LAYOUT — The results page shows a list of records. Each record has:
+- A header row showing: Case No., Challan No., Party Name, Mobile No., and a "View" button.
+- A detail section (usually already visible below the header) with a table containing: Offence Code, Offence, Act/Section, Fine.
+- Below that detail table: "Proposed Fine" with a number.
+
+HOW TO EXTRACT — For each record (track: "row X of N for [department name]"):
+1. Read "Challan No." from the header row → this is your challanId.
+2. Read the "Fine" number from the rightmost column of the detail table → this is originalAmount.
+3. Read the "Proposed Fine" number below the detail table → this is discountAmount.
+4. Do NOT click the "View" button. The data you need is already visible on screen. Only click "View" if the detail section (Fine / Proposed Fine) is hidden for a specific record.
 5. Include every record, even if Fine equals Proposed Fine.
 
-Scroll through the entire page to confirm all rows are captured.
-If "No. of Records :- 0", note "0 records for [department name]".
+Scroll through the ENTIRE page to confirm all records are captured. The page may be long — keep scrolling until you reach the bottom.
 
-Add all records from this department to your collected list in memory.
-Mark this department as completed.
+Update memory after this department:
+  "Departments completed: [..., current department]"
+  "All discount records collected so far: [...existing records, ...new records from this department]"
 
 STEP D — Next department or save:
 If more departments remain → navigate to https://vcourts.gov.in/virtualcourt/index.php and repeat from STEP A with the next department.
 If ALL departments are done → call save_discounts ONCE with ALL records collected across all departments as a single JSON array.
-Example: [{"challanId":"DL19016240430095546","discountAmount":300,"originalAmount":500},{"challanId":"57693177","discountAmount":150,"originalAmount":300}]
+Example: [{"challanId":"57768591","discountAmount":1000,"originalAmount":1000},{"challanId":"57693177","discountAmount":2000,"originalAmount":2000}]
 
 ===
 COMPLETION
@@ -214,5 +197,69 @@ ${hasMobileChange ? "- Mobile number change: success or failure" : ""}
 - Records found per department: [department: count, ...]
 - Total discount records saved via save_discounts: [count]
 `.trim();
-    },
-};
+}
+
+// ⚠️ FIX: Returns the array instead of trying to mutate a parameter.
+const challansFromDB = async (p: Record<string, string>): Promise<string[]> => {
+    try {
+        const snapshot = await challanRequestsRef
+            .where("vehicleDetails.regNo", "==", p.vehicleNumber)
+            .limit(1)
+            .get();
+
+        if (snapshot.empty) return [];
+
+        const docData = snapshot.docs[0]!.data();
+        const challansDraft: any[] = docData.challans || [];
+        console.log("existing challans len: ", challansDraft.length);
+
+        const statePrefixMap: Record<string, string> = {
+            DL: "Delhi(Traffic Department)",
+            HR: "Haryana(Traffic Department)",
+            UP: "Uttar Pradesh(Traffic Department)",
+            CH: "Chandigarh(Traffic Department)",
+            RJ: "Rajasthan(Traffic Department)",
+            PB: "Punjab(Traffic Department)",
+            MP: "Madhya Pradesh(Traffic Department)",
+            MH: "Maharashtra(Transport Department)",
+            GJ: "Gujarat(Traffic Department)",
+            KA: "Karnataka(Traffic Department)",
+            HP: "Himachal Pradesh(Traffic Department)",
+            UK: "Uttarakhand(Traffic Department)",
+            CG: "Chhattisgarh(Traffic Department)",
+            JK: "Jammu and Kashmir(Jammu Traffic Department)",
+            AS: "Assam(Traffic Department)",
+            KL: "Kerala(Police Department)",
+            TN: "Tamil Nadu(Traffic Department)",
+            AP: "Andhra Pradesh(Traffic Department)",
+            TS: "Telangana(Traffic Department)",
+            TG: "Telangana(Traffic Department)",
+            BR: "Bihar(Traffic Department)",
+            JH: "Jharkhand(Traffic Department)",
+            OD: "Odisha(Traffic Department)",
+            WB: "West Bengal(Traffic Department)",
+            GA: "Goa(Traffic Department)",
+        };
+
+        const deptSet = new Set<string>();
+
+        for (const c of challansDraft) {
+            const id: string = c.id || c.challanNo || "";
+            const prefix = id.substring(0, 2).toUpperCase();
+
+            if (/^[A-Z]{2}$/.test(prefix) && statePrefixMap[prefix]) {
+                deptSet.add(statePrefixMap[prefix]);
+            } else if (/^\d/.test(id)) {
+                deptSet.add("Delhi(Notice Department)");
+            }
+        }
+
+        const result = Array.from(deptSet);
+        console.log(`[challan-settlement] Vehicle ${p.vehicleNumber}: found ${challansDraft.length} existing challans → extra depts: [${result.join(", ")}]`);
+        return result;
+
+    } catch (e) {
+        console.error(`[challan-settlement] Failed to fetch existing challans:`, e);
+        return [];
+    }
+}

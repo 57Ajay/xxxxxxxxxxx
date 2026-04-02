@@ -1,7 +1,7 @@
 import Redis from "ioredis";
 import { getTask, listTasks } from "./tasks";
-import { handleSaveChallans, type InternalRequest } from "./internal/challans";
-import { handleSaveDiscounts } from "./internal/discounts";
+import { handleSaveChallans, type InternalRequest } from "./internal/challanSettlement/challans";
+import { handleSaveDiscounts } from "./internal/challanSettlement/discounts";
 import { DASHBOARD_HTML } from "./dashboard";
 
 import "./firebase";
@@ -30,7 +30,7 @@ const server = Bun.serve({
             // POST /api/run
             if (req.method === "POST" && url.pathname === "/api/run") {
                 const body = await req.json();
-                const { taskId, params } = body as { taskId: string; params: any };
+                const { taskId, params } = body as { taskId: string; params: Record<string, string> };
 
                 if (!taskId) {
                     return Response.json({ error: "taskId required" }, { status: 400 });
@@ -54,7 +54,7 @@ const server = Bun.serve({
                     );
                 }
 
-                const prompt = task.buildPrompt(params);
+                const prompt = await task.buildPrompt(params);
                 const jobId = crypto.randomUUID();
 
                 await redis.hset(`job:${jobId}`, {

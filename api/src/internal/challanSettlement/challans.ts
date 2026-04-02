@@ -1,5 +1,5 @@
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
-import { challanRequestsRef } from "../firebase";
+import { challanRequestsRef } from "../../firebase";
 
 export interface AgentChallan {
     challanId: string;
