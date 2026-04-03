@@ -5,9 +5,8 @@ import { buildPrompt } from "../challanSettlement/prompt";
 export const challanSettlement: Task = {
     id: "challan-settlement",
     name: "Challan Settlement Automation",
-    requiredParams: ["vehicleNumber"],
+    requiredParams: ["vehicleNumber", "requestId"],
     optionalParams: ["mobileNumber", "chassisLastFour", "engineLastFour"],
     tools: tools,
     buildPrompt: async (p) => { return await buildPrompt(p) }
 };
-

@@ -88,7 +88,19 @@ const server = Bun.serve({
                 }
 
                 const { prompt, tools, ...rest } = job;
-                return Response.json(rest);
+
+                let mobileNumber: string | undefined;
+                try {
+                    const parsedParams = JSON.parse(job.params || "{}");
+                    if (parsedParams.mobileNumber) {
+                        mobileNumber = parsedParams.mobileNumber;
+                    }
+                } catch { }
+
+                return Response.json({
+                    ...rest,
+                    ...(mobileNumber ? { mobileNumber } : {}),
+                });
             }
 
             // POST /api/jobs/:id/intervene

@@ -37,7 +37,12 @@ export async function handleSaveDiscounts(body: InternalRequest) {
         return { ok: false, error: "vehicleNumber missing from job params" };
     }
 
-    // Robust data parsing — handle string, array, or single object
+    const requestId = body.params?.requestId;
+    if (!requestId) {
+        console.log(`[save_discounts] FAIL: requestId missing`);
+        return { ok: false, error: "requestId missing from job params" };
+    }
+
     let rawIncoming: any[];
 
     if (Array.isArray(body.data)) {
@@ -96,22 +101,19 @@ export async function handleSaveDiscounts(body: InternalRequest) {
         console.log(`[save_discounts]   incoming: challanId="${d.challanId}" discount=${d.discountAmount} original=${d.originalAmount}`);
     }
 
-    // Find the challanRequest doc
-    const snapshot = await challanRequestsRef
-        .where("vehicleDetails.regNo", "==", vehicleNumber)
-        .limit(1)
-        .get();
+    // Get the challanRequest doc directly by requestId
+    const docRef = challanRequestsRef.doc(requestId);
+    const docSnap = await docRef.get();
 
-    if (snapshot.empty) {
-        console.log(`[save_discounts] FAIL: no challanRequest doc for vehicle=${vehicleNumber}`);
-        return { ok: false, error: `No challanRequest found for vehicle ${vehicleNumber}` };
+    if (!docSnap.exists) {
+        console.log(`[save_discounts] FAIL: no challanRequest doc for requestId=${requestId}`);
+        return { ok: false, error: `No challanRequest found for requestId ${requestId}` };
     }
 
-    const docRef = snapshot.docs[0]!.ref;
-    const docData = snapshot.docs[0]!.data();
+    const docData = docSnap.data()!;
     const existingChallans: any[] = docData.challansDraft || [];
 
-    console.log(`[save_discounts] doc=${snapshot.docs[0]!.id} existing challans=${existingChallans.length}`);
+    console.log(`[save_discounts] doc=${docSnap.id} existing challans=${existingChallans.length}`);
 
     const now = new Date();
     const discountMap = new Map<string, AgentDiscount>();
@@ -242,7 +244,7 @@ export async function handleSaveDiscounts(body: InternalRequest) {
     });
 
     console.log(
-        `[save_discounts] SUCCESS job=${jobId} vehicle=${vehicleNumber} matched=${matched} created=${created} total=₹${totalSettlementAmount} doc=${snapshot.docs[0]!.id}`
+        `[save_discounts] SUCCESS job=${jobId} vehicle=${vehicleNumber} matched=${matched} created=${created} total=₹${totalSettlementAmount} doc=${docSnap.id}`
     );
 
     return {
@@ -252,6 +254,6 @@ export async function handleSaveDiscounts(body: InternalRequest) {
         total: incoming.length,
         totalSettlementAmount,
         vehicle: vehicleNumber,
-        docId: snapshot.docs[0]!.id,
+        docId: docSnap.id,
     };
 }

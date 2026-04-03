@@ -199,17 +199,16 @@ ${hasMobileChange ? "- Mobile number change: success or failure" : ""}
 `.trim();
 }
 
-// ⚠️ FIX: Returns the array instead of trying to mutate a parameter.
 const challansFromDB = async (p: Record<string, string>): Promise<string[]> => {
     try {
-        const snapshot = await challanRequestsRef
-            .where("vehicleDetails.regNo", "==", p.vehicleNumber)
-            .limit(1)
-            .get();
+        const requestId = p.requestId;
+        if (!requestId) return [];
 
-        if (snapshot.empty) return [];
+        const docSnap = await challanRequestsRef.doc(requestId).get();
 
-        const docData = snapshot.docs[0]!.data();
+        if (!docSnap.exists) return [];
+
+        const docData = docSnap.data()!;
         const challansDraft: any[] = docData.challans || [];
         console.log("existing challans len: ", challansDraft.length);
 
