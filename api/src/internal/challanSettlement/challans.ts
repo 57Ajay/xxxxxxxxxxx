@@ -46,6 +46,12 @@ export async function handleSaveChallans(body: InternalRequest) {
         return { ok: false, error: "vehicleNumber missing from job params" };
     }
 
+    const requestId = body.params?.requestId;
+    if (!requestId) {
+        console.log(`[save_challans] FAIL: requestId missing`);
+        return { ok: false, error: "requestId missing from job params" };
+    }
+
     // Robust data parsing
     let rawIncoming: any[];
 
@@ -100,22 +106,18 @@ export async function handleSaveChallans(body: InternalRequest) {
         console.log(`[save_challans]   incoming: challanId="${c.challanId}" offence="${c.offence}" amount=${c.amount} date=${c.date}`);
     }
 
-    // Find the challanRequest doc for this vehicle
-    const snapshot = await challanRequestsRef
-        .where("vehicleDetails.regNo", "==", vehicleNumber)
-        .limit(1)
-        .get();
+    const docRef = challanRequestsRef.doc(requestId);
+    const docSnap = await docRef.get();
 
-    if (snapshot.empty) {
-        console.log(`[save_challans] FAIL: no challanRequest doc for vehicle=${vehicleNumber}`);
-        return { ok: false, error: `No challanRequest found for vehicle ${vehicleNumber}` };
+    if (!docSnap.exists) {
+        console.log(`[save_challans] FAIL: no challanRequest doc for requestId=${requestId}`);
+        return { ok: false, error: `No challanRequest found for requestId ${requestId}` };
     }
 
-    const docRef = snapshot.docs[0]!.ref;
-    const docData = snapshot.docs[0]!.data();
+    const docData = docSnap.data()!;
     const existingChallans: any[] = docData.challansDraft || [];
 
-    console.log(`[save_challans] doc=${snapshot.docs[0]!.id} existing challans=${existingChallans.length}`);
+    console.log(`[save_challans] doc=${docSnap.id} existing challans=${existingChallans.length}`);
 
     // Build a map of existing challans by id to preserve quotation data
     const existingMap = new Map<string, any>();
@@ -147,13 +149,13 @@ export async function handleSaveChallans(body: InternalRequest) {
     });
 
     const savedIds = mergedChallans.map(c => c.id);
-    console.log(`[save_challans] SUCCESS job=${jobId} vehicle=${vehicleNumber} saved=${mergedChallans.length} doc=${snapshot.docs[0]!.id}`);
+    console.log(`[save_challans] SUCCESS job=${jobId} vehicle=${vehicleNumber} saved=${mergedChallans.length} doc=${docSnap.id}`);
     console.log(`[save_challans] saved IDs: ${JSON.stringify(savedIds)}`);
 
     return {
         ok: true,
         saved: mergedChallans.length,
         vehicle: vehicleNumber,
-        docId: snapshot.docs[0]!.id,
+        docId: docSnap.id,
     };
 }
