@@ -174,7 +174,11 @@ async def run_agent(prompt: str, job_id: str, job_params: dict, tool_defs: list,
         llm=llm,
         browser=browser,
         tools=tools,
+        calculate_cost=True,
     )
 
     result = await agent.run(max_steps=100)
+    print(f"Token usage: {result.usage}")
+    usage_summary = await agent.token_cost_service.get_usage_summary()
+    print(f"Usage summary: {usage_summary}")
     return result.final_result() or "No result returned"

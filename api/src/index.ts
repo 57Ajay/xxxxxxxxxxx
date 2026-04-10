@@ -2,6 +2,7 @@ import Redis from "ioredis";
 import { getTask, listTasks } from "./tasks";
 import { handleSaveChallans, type InternalRequest } from "./internal/challanSettlement/challans";
 import { handleSaveDiscounts } from "./internal/challanSettlement/discounts";
+import { handleSaveReceipt } from "./internal/borderTax/receipt";
 import { releaseAgentSlot } from "./internal/agentConfig";
 import { DASHBOARD_HTML } from "./dashboard";
 
@@ -207,6 +208,33 @@ const server = Bun.serve({
                     return Response.json(result, { status });
                 } catch (e: any) {
                     console.error("[API] ERROR save_discounts:", e);
+                    return Response.json({ ok: false, error: e.message }, { status: 500 });
+                }
+            }
+
+            // Border tax receipt save
+            if (req.method === "POST" && url.pathname === "/api/internal/border-tax/save-receipt") {
+                try {
+                    const raw = await req.text();
+                    console.log(`[API] POST /api/internal/border-tax/save-receipt | body length=${raw.length}`);
+                    console.log(`[API]   body preview: ${raw.substring(0, 500)}`);
+
+                    let body: InternalRequest;
+                    try {
+                        body = JSON.parse(raw) as InternalRequest;
+                    } catch (parseErr) {
+                        console.log(`[API]   FAIL: body is not valid JSON`);
+                        return Response.json({ ok: false, error: "Request body is not valid JSON" }, { status: 400 });
+                    }
+
+                    console.log(`[API]   jobId=${body.jobId} params=${JSON.stringify(body.params)} dataType=${typeof body.data} isArray=${Array.isArray(body.data)}`);
+
+                    const result = await handleSaveReceipt(body);
+                    const status = result.ok ? 200 : 400;
+                    console.log(`[API]   result: ${JSON.stringify(result)}`);
+                    return Response.json(result, { status });
+                } catch (e: any) {
+                    console.error("[API] ERROR save_receipt:", e);
                     return Response.json({ ok: false, error: e.message }, { status: 500 });
                 }
             }
