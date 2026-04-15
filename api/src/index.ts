@@ -36,10 +36,15 @@ const server = Bun.serve({
             // POST /api/run
             if (req.method === "POST" && url.pathname === "/api/run") {
                 const body = await req.json();
-                const { taskId, params } = body as { taskId: string; params: Record<string, string> };
+                const { taskId, params, source } = body as
+                    { taskId: string; params: Record<string, string>; source?: string };
 
                 if (!taskId) {
                     return Response.json({ error: "taskId required" }, { status: 400 });
+                }
+
+                if (source && source !== "web" && source !== "app") {
+                    return Response.json({ error: "source can be either web or app" }, { status: 400 });
                 }
 
                 const task = getTask(taskId);
@@ -77,6 +82,7 @@ const server = Bun.serve({
                     tools: JSON.stringify(task.tools ?? []),
                     status: "queued",
                     createdAt,
+                    source: source || "web",
                 });
 
                 // Set 24H TTL
@@ -325,8 +331,9 @@ const server = Bun.serve({
                         jobId: string;
                         requestId?: string;
                         costData?: Record<string, any>;
+                        source?: string;
                     };
-                    const { jobId, requestId, costData } = body;
+                    const { jobId, requestId, costData, source } = body;
 
                     console.log(`[API] POST /api/internal/job-completed | jobId=${jobId} requestId=${requestId} hasCost=${!!costData}`);
 
@@ -345,7 +352,7 @@ const server = Bun.serve({
 
                     // Save cost data to challanRequest (fire-and-forget)
                     if (costData) {
-                        saveAgentCost(requestId, jobId, costData).catch((e) => {
+                        saveAgentCost(requestId, jobId, costData, source).catch((e) => {
                             console.error(`[API] background saveAgentCost failed for requestId=${requestId}:`, e);
                         });
                     }

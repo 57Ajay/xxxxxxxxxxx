@@ -80,7 +80,8 @@ export async function releaseAgentSlot(jobId: string): Promise<{ ok: boolean; er
 export async function saveAgentCost(
     requestId: string,
     jobId: string,
-    costData: Record<string, any>
+    costData: Record<string, any>,
+    source?: string
 ): Promise<{ ok: boolean; error?: string }> {
     if (!requestId || !costData) {
         return { ok: false, error: "requestId and costData required" };
@@ -99,6 +100,7 @@ export async function saveAgentCost(
             agentCost: {
                 jobId,
                 ...costData,
+                source: source || "web",
                 savedAt: FieldValue.serverTimestamp(),
             },
         });

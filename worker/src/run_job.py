@@ -18,12 +18,14 @@ API_URL = os.environ.get("API_URL", "http://api:3000")
 JOB_TTL = 60 * 60 * 24
 
 
-async def notify_job_completed(job_id: str, request_id: str | None, cost_data: dict | None = None):
+async def notify_job_completed(job_id: str, request_id: str | None, cost_data: dict | None = None, source: str = "web"):
     """Fire-and-forget: tell the API the job is done so it can release the agent config slot."""
     try:
         payload: dict = {"jobId": job_id, "requestId": request_id}
         if cost_data:
             payload["costData"] = cost_data
+        if source:
+            payload["source"] = source
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(
                 f"{API_URL}/api/internal/job-completed",
@@ -92,6 +94,7 @@ async def main():
         job_params = {}
 
     request_id = job_params.get("requestId")
+    source = job.get("source", "web")
 
     print(f"""[{job_id}] Agent starting on DISPLAY={display}, {
           len(tool_defs)} tools, params={list(job_params.keys())}""")
@@ -107,14 +110,14 @@ async def main():
         r.expire(f"job:{job_id}", JOB_TTL)
         print(f"[{job_id}] Done")
 
-        await notify_job_completed(job_id, request_id, cost_data)
+        await notify_job_completed(job_id, request_id, cost_data, source)
 
     except Exception as e:
         r.hset(f"job:{job_id}", mapping={"status": "failed", "error": str(e)})
         r.expire(f"job:{job_id}", JOB_TTL)
         print(f"[{job_id}] Failed: {e}")
 
-        await notify_job_completed(job_id, request_id)
+        await notify_job_completed(job_id, request_id, source)
 
         sys.exit(1)
 
