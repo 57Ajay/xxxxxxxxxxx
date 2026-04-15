@@ -6,6 +6,8 @@ export const buildPrompt = async (p: Record<string, string>) => {
     const entryDistrict = p.entryDistrict || "GHAZIABAD";
     const entryCheckpoint = p.entryCheckpoint || "GHAZIABAD";
     const serviceType = p.serviceType || "Air Conditioned Service";
+    const sbiUserId = p.sbiUserId || "XYZ";
+    const sbiPassword = p.sbiPassword || "123456789";
 
     return `
 You are a strict automation agent paying border tax for vehicle ${vehicleNumber} entering Uttar Pradesh.
@@ -33,13 +35,13 @@ STRICTLY FORBIDDEN ACTIONS
 ===
 YOUR TOOLS
 ===
-- wait_for_human → Call ONLY when explicitly told to in the steps below (CAPTCHA, payment).
+- wait_for_human → Call ONLY when explicitly told to in the steps below (CAPTCHA, OTP for net banking payment).
 - save_receipt → Call EXACTLY once after payment is complete and receipt is saved.
 
 ===
 CRITICAL-NOTE:
 - THIS IS GOVERNMENT SITE, HENCE IT IS NOT MUCH PERFORMANT, SO YOU MUST WAIT FOR ATLEAST
-  30 SECONDS TO JUDGE WHETHER SITE IS DOWN OR PAGE LOADED OR NOT, SOME PAGE CAN LOAD
+  10-15 SECONDS TO JUDGE WHETHER SITE IS DOWN OR PAGE LOADED OR NOT, SOME PAGE CAN LOAD
   FAST AND SOME CAN TAKE TIME SO ENSURE NOT TO EARLY EXIT AND CALLING IT DONE.
 ===
 
@@ -117,21 +119,56 @@ CAPTCHA RETRY (max 5 attempts):
 2. A confirmation popup will appear asking "Are you sure?" or similar.
    - Click "Yes" or "OK" to confirm.
 
-3. The payment gateway page loads.
-   - Call wait_for_human with reason: "Payment required for border tax of vehicle ${vehicleNumber}. Please complete the payment and reply done once the receipt page appears."
+3. The PAYMENT GATEWAY page loads (Ministry of Road Transport & Highway — "PAYMENT DETAILS" page).
+   VERIFY: You see "Payment Id", "Amount", and "Select Payment Gateway" dropdown.
+   - In the "Select Payment Gateway" dropdown, select "SBI (Multi Bank Payment)".
+   - Click the checkbox "I accept terms and conditions."
+   - Click the "Submit" button.
+
+4. The SBI ePay Lite page loads (SBIePay / formerly SBMOPS).
+   VERIFY: You see payment method options: "Net Banking", "Card Payments", "Other Payment Modes", "Wallet Payment".
+   - Under "Net Banking", click "SBI Net Banking" (the first option, showing "Bank Charges(₹): 0.0").
+   - Wait for the next page to load.
+
+5. The SBI Net Banking login page loads.
+   VERIFY: You see two tabs: "Personal Banking" and "Corporate Banking / yono BUSINESS", plus "User ID" and "Password" fields and a virtual keyboard.
+   - Click the "Corporate Banking / yono BUSINESS" tab.
+   - In the "User ID" field, type: ${sbiUserId}
+   - In the "Password" field, type: ${sbiPassword}
+   - Click the "LOGIN" button.
+   - Wait for the next page to load.
+   - If login fails (invalid credentials, account locked, error message) → ABORT. Reason: "SBI Net Banking login failed: [exact error]"
+
+6. The Account Selection & Payment Details page loads.
+   VERIFY: You see "Uttar Pradesh Transport Department" header, an account table with a selected account (radio button),
+   and "Payment Detail" section showing Registration No, amounts, Transaction ID, and a yellow "CONFIRM" button.
+   - Verify the account is already selected (radio button is filled).
+   - Click the yellow "CONFIRM" button.
+   - Wait for the next page to load.
+
+7. The OTP / High Security Password page loads.
+   VERIFY: You see "Verify and confirm Uttar Pradesh Transport Department transaction details",
+   recent transaction history, and at the bottom: "Enter High Security Password" field with a yellow "CONFIRM" button.
+   - Call wait_for_human with reason: "OTP required for SBI Net Banking payment of border tax for vehicle ${vehicleNumber}. An OTP has been sent to the registered mobile number. Please provide the OTP."
+   - After human responds with the OTP:
+     a. Type the OTP into the "Enter High Security Password" field.
+     b. Click the yellow "CONFIRM" button.
+     c. Wait for the page to redirect.
+   - If the page shows a payment failure, invalid OTP, or timeout → ABORT. Reason: "Payment failed: [details from page]"
 
 ===
 PHASE 6 — SAVE RECEIPT
 ===
-1. After human confirms payment is done, the page should show the receipt.
+1. After payment is confirmed, the page should redirect to the receipt page.
+   - If the page does not redirect within 30 seconds → check if there is an error message. If so → ABORT.
 2. Read the following from the receipt:
    - Receipt No.
    - Registration No. (vehicle number)
    - Grand Total amount
    - Payment Confirmation Date
 3. Click the "Print" button on the receipt page.
-   - This may trigger a print dialog or generate a PDF view.
-   - If a print dialog appears, call wait_for_human: "Print dialog appeared. Please save the receipt as PDF to /app/receipts/${vehicleNumber}.pdf and reply done."
+   - Wait 30 seconds to allow the human to download/save the receipt PDF from the print dialog.
+   - After 30 seconds, proceed regardless.
 4. Call save_receipt with the receipt details:
    {"vehicleNumber":"${vehicleNumber}","receiptNumber":"<receipt_no>","amount":<total_amount>,"paymentDate":"<YYYY-MM-DD>"}
 

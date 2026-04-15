@@ -10,6 +10,10 @@ import "./firebase";
 
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
 
+const JOB_TTL = 60 * 60 * 24; // 24 hours in seconds
+const DEFAULT_PAGE_LIMIT = 100;
+const MAX_PAGE_LIMIT = 100;
+
 function corsHeaders(): Record<string, string> {
     return {
         "Access-Control-Allow-Origin": "*",
@@ -58,18 +62,34 @@ const server = Bun.serve({
 
                 const prompt = await task.buildPrompt(params);
                 const jobId = crypto.randomUUID();
+                const now = new Date();
+                const createdAt = now.toISOString();
+                const createdAtMs = now.getTime();
 
-                await redis.hset(`job:${jobId}`, {
+                const pipeline = redis.pipeline();
+
+                // Store job hash
+                pipeline.hset(`job:${jobId}`, {
                     id: jobId,
                     taskId,
                     params: JSON.stringify(params),
                     prompt,
                     tools: JSON.stringify(task.tools ?? []),
                     status: "queued",
-                    createdAt: new Date().toISOString(),
+                    createdAt,
                 });
 
-                await redis.lpush("job:queue", jobId);
+                // Set 24H TTL
+                pipeline.expire(`job:${jobId}`, JOB_TTL);
+
+                // Index in sorted sets (score = timestamp for ordering)
+                pipeline.zadd("jobs:all", createdAtMs, jobId);
+                pipeline.zadd(`jobs:task:${taskId}`, createdAtMs, jobId);
+
+                // Push to work queue
+                pipeline.lpush("job:queue", jobId);
+
+                await pipeline.exec();
 
                 return Response.json({ jobId });
             }
@@ -136,26 +156,85 @@ const server = Bun.serve({
                 return Response.json({ ok: true, message: "Input submitted, agent will resume" });
             }
 
-            // GET /api/jobs
+            // GET /api/jobs — paginated, filterable by taskId
             if (req.method === "GET" && url.pathname === "/api/jobs") {
-                const keys = await redis.keys("job:*");
-                const jobs = [];
+                const taskId = url.searchParams.get("taskId") || undefined;
+                const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+                const limit = Math.min(
+                    MAX_PAGE_LIMIT,
+                    Math.max(1, parseInt(url.searchParams.get("limit") || String(DEFAULT_PAGE_LIMIT), 10) || DEFAULT_PAGE_LIMIT)
+                );
 
-                for (const key of keys) {
-                    if (key === "job:queue") continue;
-                    const type = await redis.type(key);
-                    if (type !== "hash") continue;
+                // Pick the right sorted set
+                const indexKey = taskId ? `jobs:task:${taskId}` : "jobs:all";
 
-                    const job = await redis.hgetall(key);
-                    if (job && job.id) {
-                        const { prompt, tools, ...rest } = job;
-                        jobs.push(rest);
-                    }
+                // Total count (before pagination)
+                const totalCount = await redis.zcard(indexKey);
+
+                // Fetch page (newest first via ZREVRANGE)
+                const start = (page - 1) * limit;
+                const stop = start + limit - 1;
+                const jobIds = await redis.zrevrange(indexKey, start, stop);
+
+                if (jobIds.length === 0) {
+                    return Response.json({
+                        jobs: [],
+                        pagination: { page, limit, total: totalCount, totalPages: Math.ceil(totalCount / limit) },
+                    });
                 }
 
-                jobs.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+                // Pipeline HGETALL for all job IDs
+                const pipeline = redis.pipeline();
+                for (const jid of jobIds) {
+                    pipeline.hgetall(`job:${jid}`);
+                }
+                const results = await pipeline.exec();
 
-                return Response.json({ jobs });
+                const jobs: Record<string, string>[] = [];
+                const expiredIds: string[] = [];
+
+                for (let i = 0; i < jobIds.length; i++) {
+                    const entry = results![i];
+                    const err = entry?.[0];
+                    const job = entry?.[1] as Record<string, string> | undefined;
+                    if (err || !job || !job.id) {
+                        // Hash expired (TTL) but sorted set entry remains — mark for cleanup
+                        expiredIds.push(jobIds[i]!);
+                        continue;
+                    }
+                    const { prompt, tools, ...rest } = job;
+                    jobs.push(rest);
+                }
+
+                // Lazy cleanup: remove expired entries from sorted sets
+                if (expiredIds.length > 0) {
+                    const cleanupPipeline = redis.pipeline();
+                    for (const eid of expiredIds) {
+                        cleanupPipeline.zrem("jobs:all", eid);
+                        // We don't know the taskId of expired jobs, so clean from all task sets
+                        // This is fine — ZREM on non-existent members is a no-op
+                        const tasks = listTasks();
+                        for (const t of tasks) {
+                            cleanupPipeline.zrem(`jobs:task:${t}`, eid);
+                        }
+                    }
+                    cleanupPipeline.exec().catch((e) =>
+                        console.error("[API] lazy cleanup error:", e)
+                    );
+                }
+
+                // Adjust total to account for expired entries we just found
+                const adjustedTotal = totalCount - expiredIds.length;
+
+                return Response.json({
+                    jobs,
+                    pagination: {
+                        page,
+                        limit,
+                        total: Math.max(0, adjustedTotal),
+                        totalPages: Math.max(1, Math.ceil(Math.max(0, adjustedTotal) / limit)),
+                    },
+                });
             }
 
             // Internal endpoints (called by worker tools)
@@ -251,6 +330,9 @@ const server = Bun.serve({
 
                     console.log(`[API] POST /api/internal/job-completed | jobId=${jobId} requestId=${requestId} hasCost=${!!costData}`);
 
+                    // Refresh TTL on completion so job stays visible for 24H from now
+                    await redis.expire(`job:${jobId}`, JOB_TTL);
+
                     if (!requestId) {
                         console.log(`[API]   no requestId, skipping agent config release`);
                         return Response.json({ ok: true, skipped: true });
@@ -299,6 +381,10 @@ const server = Bun.serve({
                 }
 
                 await redis.hset(`job:${jobId}`, "status", "cancelled");
+
+                // Refresh TTL so cancelled job stays visible for 24H
+                await redis.expire(`job:${jobId}`, JOB_TTL);
+
                 await releaseAgentSlot(jobId);
 
                 return Response.json({ ok: true, message: "Cancellation requested" });

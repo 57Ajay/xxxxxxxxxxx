@@ -127,13 +127,13 @@ YOUR TOOLS
 ===
 - wait_for_human → ONLY when explicitly told in steps below (OTP, CAPTCHA).
 - save_challans → At most once, after Phase 1 (only if challans were found).
-- save_discounts → MANDATORY once PER DEPARTMENT in Phase 2 after extracting records. If you extracted discount records from a department, you MUST call this tool before moving on. Failing to call save_discounts means the extracted data is lost.
+- save_discounts → MANDATORY once PER DEPARTMENT in Phase 2 after extracting records. Also called once in Phase 2.5 for "Pay Now" challans from Delhi Traffic Police. If you extracted discount records from a department, you MUST call this tool before moving on. Failing to call save_discounts means the extracted data is lost.
 
 TOOL-CALL RULES:
 1. Every challanId in a single call MUST be unique. Deduplicate before calling.
 2. Before calling, count unique challanIds. Count must equal array length.
 3. save_challans: called AT MOST once (after Phase 1). Skip if 0 challans found.
-4. save_discounts: called once per department. Do NOT accumulate across departments.
+4. save_discounts: called once per department AND once for Pay Now challans. Do NOT accumulate across departments.
 
 ===
 SKIP CONDITIONS
@@ -173,7 +173,8 @@ SAFETY SAVE — STEP BUDGET
 Maximum 100 steps. At step ~90 if not finished:
 1. Call save_challans (if not yet called AND you have challan data) with whatever you have.
 2. Call save_discounts for current department's unsaved records.
-3. Report partial completion.
+3. Call save_discounts for any unsaved Pay Now challans from Phase 2.5.
+4. Report partial completion.
 SAVING DATA > completing more departments.
 
 ===
@@ -216,6 +217,7 @@ STEP 5: Extract EVERY challan row. For each row, read:
   - Offence description (the text describing what the violation was)
   - Fine amount (number in ₹)
   - Date (convert to YYYY-MM-DD)
+  - Status column: check if it says "Pending for Payment" (these rows have a "Pay Now" button in the Make Payment column instead of "Virtual Court"). Note this status — you will need it later.
 
 STEP 6: Handle zero/missing amounts using DEFAULT OFFENCE PRICES:
   If a challan has amount = 0 or amount is missing, determine the amount from the offence:
@@ -232,7 +234,13 @@ STEP 8: Verify your data: count unique challanIds, confirm no duplicates.
 
 STEP 9: If you extracted 1 or more challans → call save_challans EXACTLY once with ALL challans as a JSON array.
   Format: [{"challanId":"DL19016240430095546","offence":"Red Light Violation","amount":5000,"date":"2024-06-15"}]
+  Include BOTH "Sent to Virtual Court" AND "Pending for Payment" challans in save_challans — ALL challans get saved here.
   If you extracted 0 challans → skip save_challans. Follow the zero-challan instruction from Step 4.
+
+STEP 10: Build a separate list called payNowChallans containing ONLY the challans whose Status was "Pending for Payment" (the ones with "Pay Now" button).
+  For each such challan, record: {"challanId": "<id>", "discountAmount": <amount>, "originalAmount": <amount>}
+  NOTE: For "Pay Now" challans, discountAmount = originalAmount (the full fine amount). These challans are NOT sent to Virtual Courts, so there is no court-determined discount. The settlement amount equals the original fine.
+  Keep this list — you will use it in Phase 2.5.
 
 ===
 PHASE 1.5 — DETERMINE DEPARTMENTS (logic only, no browser)
@@ -276,6 +284,7 @@ ${extraDeptInPhase15}
 Build a UNIQUE department list. Note it down:
   "Departments: [list]"
   "Current index: 0"
+  "Pay Now challans to save in Phase 2.5: [count]"
 
 ===
 PHASE 2 — VIRTUAL COURTS (one department at a time)
@@ -423,24 +432,50 @@ ABSOLUTE PROHIBITIONS IN STEP C:
 --- END FOR EACH DEPARTMENT ---
 
 ===
+PHASE 2.5 — SAVE DISCOUNTS FOR "PAY NOW" CHALLANS
+===
+CONTEXT: Challans with "Pending for Payment" status (the ones with "Pay Now" button) on Delhi Traffic Police
+are NOT present on Virtual Courts — they have no court-determined discount. For these challans, the settlement
+amount (discount) equals the original fine amount, because the driver must pay the full penalty directly.
+
+You built the payNowChallans list in Phase 1 Step 10.
+
+1. If payNowChallans is empty → note "No Pay Now challans to save". Skip to COMPLETION.
+
+2. If payNowChallans has 1 or more entries:
+   a. Deduplicate by challanId. Remove any duplicates.
+   b. Remove any challanId that was ALREADY saved in Phase 2 (i.e., if a challan somehow appeared in both
+      Virtual Courts results AND as Pay Now — unlikely but be safe). Only save challans NOT already covered.
+   c. Verify count of unique challanIds = array length.
+   d. Call save_discounts with the payNowChallans list.
+      Format: [{"challanId":"41374772","discountAmount":2000,"originalAmount":2000}]
+      Remember: for Pay Now challans, discountAmount = originalAmount (the full fine).
+   e. Wait for the tool response. Confirm it returned ok: true.
+   f. Note: "Pay Now challans — saved {n} discount records".
+
+===
 COMPLETION
 ===
 BEFORE reporting, verify this checklist:
   ✓ save_challans was called (if Phase 1 found challans)
   ✓ save_discounts was called for EVERY department where you extracted records
+  ✓ save_discounts was called for Pay Now challans (Phase 2.5) if any existed
   ✓ If you extracted records from a department but did NOT call save_discounts → GO BACK AND CALL IT NOW
+  ✓ If you have unsaved Pay Now challans → GO BACK TO PHASE 2.5 AND SAVE THEM NOW
 
 Report this summary:
 ${hasMobileChange ? "Mobile number change: [success/failure]" : ""}
 Challans found (Delhi Traffic Police): [count]
 Challans saved: [count]
+Pay Now challans (Pending for Payment): [count]
 Departments queried: [list]
 Departments skipped: [list with reasons]
 Discount records saved per department: [name: count, ...]
+Pay Now discount records saved: [count]
 Paid challans skipped: [total]
 Transferred-to-court challans skipped: [total]
 Pending-proceedings challans skipped: [total]
-Total discount records saved: [total]
+Total discount records saved: [total across all departments + Pay Now]
 Status: [complete / partial — reason]
 `.trim();
 }

@@ -15,6 +15,7 @@ from agent import run_agent
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 API_URL = os.environ.get("API_URL", "http://api:3000")
+JOB_TTL = 60 * 60 * 24
 
 
 async def notify_job_completed(job_id: str, request_id: str | None, cost_data: dict | None = None):
@@ -77,6 +78,7 @@ async def main():
     if not prompt:
         r.hset(f"job:{job_id}", mapping={
                "status": "failed", "error": "No prompt"})
+        r.expire(f"job:{job_id}", JOB_TTL)
         sys.exit(1)
 
     try:
@@ -102,12 +104,14 @@ async def main():
         final_result = result.final_result() or "No result returned"
         r.hset(f"job:{job_id}", mapping={
                "status": "done", "result": final_result})
+        r.expire(f"job:{job_id}", JOB_TTL)
         print(f"[{job_id}] Done")
 
         await notify_job_completed(job_id, request_id, cost_data)
 
     except Exception as e:
         r.hset(f"job:{job_id}", mapping={"status": "failed", "error": str(e)})
+        r.expire(f"job:{job_id}", JOB_TTL)
         print(f"[{job_id}] Failed: {e}")
 
         await notify_job_completed(job_id, request_id)
