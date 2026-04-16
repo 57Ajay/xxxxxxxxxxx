@@ -1,0 +1,15 @@
+{$DOMAIN} {
+    handle /api/* {
+        reverse_proxy api:3000
+    }
+
+    @vm path_regexp vm ^/vm/([^/]+)(/.*)$
+    handle @vm {
+        uri strip_prefix /vm/{re.vm.1}
+        reverse_proxy {re.vm.1}:6080
+    }
+
+    handle {
+        respond "not found" 404
+    }
+}
