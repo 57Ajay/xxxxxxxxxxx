@@ -17,6 +17,20 @@ MAX_SLOTS = int(os.environ.get("MAX_SLOTS", "10"))
 DOMAIN = os.environ.get("DOMAIN", "localhost")
 JOB_TTL = 60 * 60 * 24
 
+WORKER_HOSTNAME = os.environ.get("WORKER_HOSTNAME")
+if not WORKER_HOSTNAME:
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "http://metadata.google.internal/computeMetadata/v1/instance/name",
+            headers={"Metadata-Flavor": "Google"},
+        )
+        WORKER_HOSTNAME = urllib.request.urlopen(
+            req, timeout=1).read().decode()
+    except Exception:
+        WORKER_HOSTNAME = "worker"
+print(f"[main] worker hostname = {WORKER_HOSTNAME}")
+
 pool: SlotPool
 
 
@@ -57,6 +71,9 @@ async def monitor_job(slot, r: redis.Redis):
 
 async def worker_loop(r: redis.Redis):
     while True:
+        if r.get(f"vm:{WORKER_HOSTNAME}:draining") == b"1":
+            await asyncio.sleep(2)
+            continue
         # Don't pop from queue if all slots are busy
         if pool.available_count() == 0:
             await asyncio.sleep(1)
@@ -98,9 +115,9 @@ async def worker_loop(r: redis.Redis):
             continue
 
         live_url = (
-            f"https://{DOMAIN}/vnc.html"
-            f"?autoconnect=true&resize=scale&path=websockify%3Ftoken%3D{
-                job_id}"
+            f"https://{DOMAIN}/vm/{WORKER_HOSTNAME}/vnc.html"
+            f"?autoconnect=true&resize=scale"
+            f"&path=vm/{WORKER_HOSTNAME}/websockify%3Ftoken%3D{job_id}"
         )
 
         r.hset(f"job:{job_id}", mapping={
