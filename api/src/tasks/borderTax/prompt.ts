@@ -230,8 +230,7 @@ ABORT CONDITIONS
 - parivahan.gov.in does not load, shows error, maintenance page, or blank page → ABORT. Reason: "Parivahan site is down: [exact error]"
 - Checkpost portal does not load → ABORT. Reason: "Checkpost portal failed to load."
 - Vehicle number not found or "Get Details" returns error → ABORT. Reason: "Vehicle ${vehicleNumber} not found on checkpost portal."
-- "No valid insurance detected" popup appears on the Vehicle Information page (after selecting Service Type) → ABORT. Reason: "Vehicle ${vehicleNumber} has no valid insurance. Please renew the vehicle's insurance policy before attempting border tax payment."
-- Tax dates cannot be entered after multiple attempts via calendar picker and fallback typing → ABORT. Reason: "Unable to enter tax dates on checkpost portal despite multiple attempts."
+- "No valid insurance detected" popup appears on the Vehicle Information page (either on page load or after selecting Service Type) → ABORT. Reason: "Vehicle ${vehicleNumber} has no valid insurance. Please renew the vehicle's insurance policy before attempting border tax payment."
 - Payment fails after human intervention → ABORT. Reason: "Payment failed: [details]"
 ${paymentAbort}
 
@@ -266,14 +265,8 @@ POSSIBLE POPUP: A red error popup reading "No valid insurance detected. Please r
 AVAILABLE ACTIONS: Select service type from dropdown, click "Next". If insurance popup appears → click "OK" → ABORT.
 
 PAGE: CHECKPOST PORTAL — Tax Information (Step 3 of 4)
-VISUAL: "Tax Mode" dropdown. "Tax From" and "Tax Upto" date input fields, each showing placeholder "mm/dd/yyyy".
-  Each date input has a small calendar icon at the BOTTOM-RIGHT corner of the input field.
-  Below the inputs is a results table (S. No., Tax/Fee Particulars, Tax From, Tax Upto, Amount).
-  "Total Amount" field and "Calculate Fee/Tax" button on the right. "Previous" and "Next" buttons at the bottom.
-POSSIBLE POPUP: "Please select From Date!..." or "Please select Tax Upto!..." popup with "OK" button —
-  appears if the date fields were not populated correctly (typing directly often fails; use the calendar picker).
-AVAILABLE ACTIONS: Select tax mode, click calendar icons to open date pickers and select dates,
-  click "Calculate Fee/Tax", click "Next".
+VISUAL: "Tax Mode" dropdown, "Tax From" and "Tax Upto" date fields. "Calculate Fee/Tax" button, then "Next" button.
+AVAILABLE ACTIONS: Select tax mode, enter dates, click "Calculate Fee/Tax", then click "Next".
 
 PAGE: CHECKPOST PORTAL — Disclaimer (Step 4 of 4)
 VISUAL: Vehicle and tax summary. CAPTCHA image + input field. Checkbox "I confirm that above information are correct as per my knowledge." and "Pay Online" button.
@@ -334,55 +327,14 @@ PHASE 3 — FILL ENTRY DETAILS
 ===
 PHASE 4 — TAX CALCULATION
 ===
-
-DATE ENTRY RULE (READ THIS FIRST, APPLIES TO BOTH DATE FIELDS BELOW):
-Directly typing into the date input fields on this portal is UNRELIABLE — the portal often silently
-discards typed input, causing a "Please select From Date!..." popup when you click Calculate Fee/Tax.
-ALWAYS use the calendar picker instead:
-  (i)   Locate the small calendar icon at the BOTTOM-RIGHT corner of the date input field.
-  (ii)  Click that calendar icon. A calendar popup should open.
-  (iii) In the calendar popup, navigate to the correct month and year using the arrow buttons
-        (or the month/year header) in the popup.
-  (iv)  Click the target day number in the calendar grid.
-  (v)   VERIFY the date input field now shows the selected date in MM/DD/YYYY format.
-If the calendar popup does NOT open after clicking the icon, try clicking the icon ONE more time.
-If it still doesn't open, as a last-resort fallback, click into the input field, clear it, and
-type the date in MM/DD/YYYY format.
-
-STEPS:
-
 1. On the Tax Information page (Step 3 of 4):
    - In "Tax Mode" dropdown, select "${taxMode}".
-
-2. Enter "Tax From" date = ${taxFrom}:
-   - Click the calendar icon at the bottom-right of the "Tax From" field.
-   - In the calendar popup, navigate to the correct month/year for ${taxFrom}.
-   - Click the day number in the grid to select ${taxFrom}.
-   - VERIFY: The "Tax From" field now displays the date (format MM/DD/YYYY).
-   - If verification fails → retry the calendar picker ONCE. If still failing, use the fallback: click the input, clear it, type the date in MM/DD/YYYY format.
-
-3. Enter "Tax Upto" date = ${taxUpto}:
-   - Click the calendar icon at the bottom-right of the "Tax Upto" field.
-   - In the calendar popup, navigate to the correct month/year for ${taxUpto}.
-   - Click the day number in the grid to select ${taxUpto}.
-   - VERIFY: The "Tax Upto" field now displays the date (format MM/DD/YYYY).
-   - If verification fails → retry the calendar picker ONCE. If still failing, use the fallback: click the input, clear it, type the date in MM/DD/YYYY format.
-
-4. Click the "Calculate Fee/Tax" button.
-
-5. POPUP HANDLING after Calculate Fee/Tax:
-   - If a popup appears saying "Please select From Date!..." or "Please select Tax Upto!..." or similar:
-     → Click "OK" to close the popup.
-     → The date(s) did not register. RE-ENTER the affected date(s) using the calendar picker method above.
-     → Click "Calculate Fee/Tax" again.
-     → Allow up to 3 total attempts across the two date fields combined.
-     → If after 3 attempts the "Please select ... Date!" popup still appears → ABORT. Reason: "Unable to enter tax dates on checkpost portal despite multiple attempts using calendar picker and direct typing."
-   - If any other popup/error appears → close it and ABORT with the exact error text.
-
-6. After Calculate Fee/Tax succeeds:
-   - Wait for the tax amount to appear in the results table and the "Total Amount" field.
-   - Verify the amount is a number > 0.
-   - Click the "Next" button.
+   - In "Tax From" date field, enter "${taxFrom}".
+   - In "Tax Upto" date field, enter "${taxUpto}".
+2. Click the "Calculate Fee/Tax" button.
+3. Wait for the tax amount to appear in the table and the amount field.
+4. Verify the amount is displayed (it should be a number > 0).
+5. Click the "Next" button.
 
 ===
 PHASE 5 — DISCLAIMER AND PAYMENT
