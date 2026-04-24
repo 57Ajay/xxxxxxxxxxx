@@ -69,16 +69,25 @@ const server = Bun.serve({
                     );
                 }
 
+                const jobId = params?.requestId || crypto.randomUUID();
+
+                const existingStatus = await redis.hget(`job:${jobId}`, "status");
+                if (existingStatus && ["queued", "running", "waiting_for_human"].includes(existingStatus)) {
+                    console.log(
+                        `[API] /api/run dedup: jobId=${jobId} already ${existingStatus}, returning existing`
+                    );
+                    return Response.json({ jobId, deduped: true, status: existingStatus });
+                }
+
                 const resolvedSource: JobSource = (source as JobSource) || "web";
                 const prompt = await task.buildPrompt(params, resolvedSource);
-                const jobId = crypto.randomUUID();
                 const now = new Date();
                 const createdAt = now.toISOString();
                 const createdAtMs = now.getTime();
 
                 const pipeline = redis.pipeline();
 
-                // Store job hash
+                pipeline.del(`job:${jobId}`);
                 pipeline.hset(`job:${jobId}`, {
                     id: jobId,
                     taskId,
@@ -90,14 +99,11 @@ const server = Bun.serve({
                     source: resolvedSource,
                 });
 
-                // Set 24H TTL
                 pipeline.expire(`job:${jobId}`, JOB_TTL);
 
-                // Index in sorted sets (score = timestamp for ordering)
                 pipeline.zadd("jobs:all", createdAtMs, jobId);
                 pipeline.zadd(`jobs:task:${taskId}`, createdAtMs, jobId);
 
-                // Push to work queue
                 pipeline.lpush("job:queue", jobId);
 
                 await pipeline.exec();
