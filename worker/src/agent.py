@@ -7,6 +7,8 @@ import redis
 from browser_use import Agent, Browser, ChatGoogle, Tools
 
 API_URL = os.environ.get("API_URL", "http://api:3000")
+HUMAN_WAIT_TIMEOUT = 200
+JOB_TTL = 60 * 60 * 24
 
 
 def make_tools(job_id: str, job_params: dict, tool_defs: list, r: redis.Redis) -> Tools:
@@ -19,18 +21,27 @@ def make_tools(job_id: str, job_params: dict, tool_defs: list, r: redis.Redis) -
             "Pass a reason (e.g. 'OTP required', 'CAPTCHA needs solving'). "
             "The human can interact with the browser directly via the live view, "
             "or send a text response via API. "
-            "Returns the human's response when they are finished."
+            "Returns the human's response when they are finished.\n\n"
+            f"IMPORTANT — TIMEOUT BEHAVIOR: If no human response arrives within "
+            f"{HUMAN_WAIT_TIMEOUT} seconds, this tool returns a string starting with "
+            "'TIMEOUT:'. When you see TIMEOUT:\n"
+            "  1. Do NOT call wait_for_human again — the human is not available.\n"
+            "  2. Save any partial data you have already extracted "
+            "(save_challans / save_discounts / save_receipt as applicable).\n"
+            "  3. Finish with 'Status: partial' in your final summary."
         )
     )
     async def wait_for_human(reason: str) -> str:
-        print(f"[{job_id}] Waiting for human: {reason}")
+        print(f"[{job_id}] Waiting for human (timeout={
+              HUMAN_WAIT_TIMEOUT}s): {reason}")
 
         r.hset(f"job:{job_id}", mapping={
             "status": "waiting_for_human",
             "waitReason": reason,
         })
 
-        while True:
+        waited = 0
+        while waited < HUMAN_WAIT_TIMEOUT:
             human_input = r.hget(f"job:{job_id}", "humanInput")
             if human_input:
                 human_input = human_input.decode() if isinstance(
@@ -40,8 +51,23 @@ def make_tools(job_id: str, job_params: dict, tool_defs: list, r: redis.Redis) -
                 print(f"[{job_id}] Human done: {human_input}")
                 return human_input
             await asyncio.sleep(1)
+            waited += 1
 
-    # -- dynamic tools from task definition --
+        # Timeout — record partial reason, flip status back to running, let the agent continue
+        r.hdel(f"job:{job_id}", "waitReason")
+        r.hset(f"job:{job_id}", "status", "running")
+        r.rpush(f"job:{job_id}:partial_reasons", f"human_timeout:{reason}")
+        r.expire(f"job:{job_id}:partial_reasons", JOB_TTL)
+        print(f"[{job_id}] Human timeout after {
+              HUMAN_WAIT_TIMEOUT}s: {reason}")
+        return (
+            f"TIMEOUT: No human response after {HUMAN_WAIT_TIMEOUT} seconds. "
+            f"Reason was: {reason}. Do NOT call wait_for_human again. "
+            "Save any partial data via save_challans / save_discounts / save_receipt, "
+            "then complete with 'Status: partial'."
+        )
+
+        # -- dynamic tools from task definition --
     for tool_def in tool_defs:
         _register_dynamic_tool(tools, tool_def, job_id, job_params)
 
