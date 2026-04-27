@@ -8,9 +8,8 @@ import { releaseAgentSlot, saveAgentCost } from "./internal/agentConfig";
 import { saveAgentWorkSummary } from "./internal/agentWorkSummary";
 import { DASHBOARD_HTML } from "./dashboard";
 import { setAssignedPartner } from "./internal/assignedPartner";
-import { markChallansUpdatedByAgent } from "./internal/challanSettlement/markUpdated";
-
-import "./firebase";
+import { setAiAgentWorkStatus } from "./internal/aiAgentWorkStatus";
+import { challanRequestsRef } from "./firebase";
 
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
 
@@ -88,6 +87,7 @@ const server = Bun.serve({
                 const pipeline = redis.pipeline();
 
                 pipeline.del(`job:${jobId}`);
+                pipeline.del(`job:${jobId}:partial_reasons`);
                 pipeline.hset(`job:${jobId}`, {
                     id: jobId,
                     taskId,
@@ -107,11 +107,21 @@ const server = Bun.serve({
                 pipeline.lpush("job:queue", jobId);
 
                 await pipeline.exec();
-
                 if (resolvedSource === "app" && params?.requestId) {
                     setAssignedPartner(params.requestId, taskId).catch((e) => {
                         console.error(
-                            `[API] background setAssignedPartner failed for requestId=${params.requestId}:`,
+                            `[API] background setAssignedPartner failed for requestId=
+                                    ${params.requestId}:`,
+                            e,
+                        );
+                    });
+                }
+
+                if (params?.requestId) {
+                    setAiAgentWorkStatus(params.requestId, taskId, "started").catch((e) => {
+                        console.error(
+                            `[API] background setAiAgentWorkStatus(started) failed for requestId=
+                                    ${params.requestId}:`,
                             e,
                         );
                     });
@@ -350,17 +360,19 @@ const server = Bun.serve({
                     const body = await req.json() as {
                         jobId: string;
                         requestId?: string;
-                        status?: "done" | "failed";
+                        status?: "done" | "failed" | "partial";
                         summary?: string;
                         error?: string;
                         costData?: Record<string, any>;
                         source?: string;
+                        partialReasons?: string[];
                     };
-                    const { jobId, requestId, status, summary, error, costData, source } = body;
+                    const { jobId, requestId, status, summary, error, costData, source, partialReasons } = body;
 
                     console.log(
                         `[API] POST /api/internal/job-completed | jobId=${jobId} requestId=${requestId} ` +
-                        `status=${status} hasSummary=${!!summary} hasError=${!!error} hasCost=${!!costData}`
+                        `status=${status} hasSummary=${!!summary} hasError=${!!error} ` +
+                        `hasCost=${!!costData} partialReasons=${partialReasons?.length ?? 0}`
                     );
 
                     // Refresh TTL on completion so job stays visible for 24H from now
@@ -383,17 +395,14 @@ const server = Bun.serve({
                         });
                     }
 
-                    // Persist agent work summary to Firestore (fire-and-forget).
-                    // Pull taskId / vehicleNumber / params from the Redis job hash so the
-                    // worker doesn't need to resend them.
                     (async () => {
                         try {
                             const job = await redis.hgetall(`job:${jobId}`);
                             let params: Record<string, any> = {};
                             try { params = JSON.parse(job?.params || "{}"); } catch { /* ignore */ }
 
-                            const resolvedStatus: "done" | "failed" =
-                                status === "done" || status === "failed"
+                            const resolvedStatus: "done" | "failed" | "partial" =
+                                status === "done" || status === "failed" || status === "partial"
                                     ? status
                                     : (error ? "failed" : "done");
 
@@ -408,19 +417,25 @@ const server = Bun.serve({
                                 source: source || job?.source || "web",
                                 params,
                                 costData,
+                                partialReasons,
                             });
 
-                            if (job?.taskId === "challan-settlement" && resolvedStatus === "done") {
-                                markChallansUpdatedByAgent(requestId).catch((e) => {
-                                    console.error(
-                                        `[API] background markChallansUpdatedByAgent failed for requestId=${requestId}:`,
-                                        e,
-                                    );
-                                });
-                            }
+                            // Map worker's "done" → frontend-facing "completed"
+                            const aiStatus =
+                                resolvedStatus === "done" ? "completed" : resolvedStatus;
+
+                            setAiAgentWorkStatus(requestId, job?.taskId, aiStatus).catch((e) => {
+                                console.error(
+                                    `[API] background setAiAgentWorkStatus(${aiStatus})
+                                    failed for requestId=${requestId}:`,
+                                    e,
+                                );
+                            });
+
 
                         } catch (e) {
-                            console.error(`[API] background saveAgentWorkSummary failed for requestId=${requestId}:`, e);
+                            console.error(`[API] background saveAgentWorkSummary
+                                          failed for requestId=${requestId}:`, e);
                         }
                     })();
 
@@ -430,7 +445,6 @@ const server = Bun.serve({
                     return Response.json({ ok: false, error: e.message }, { status: 500 });
                 }
             }
-
             // POST /api/jobs/:id/cancel
             const cancelMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/cancel$/);
             if (req.method === "POST" && cancelMatch) {
@@ -442,7 +456,8 @@ const server = Bun.serve({
                 }
 
                 const current = job.status;
-                if (current === "done" || current === "failed" || current === "cancelled") {
+                if (current === "done" || current === "failed" || current === "cancelled"
+                    || current === "partial") {
                     return Response.json(
                         { error: `Job already ${current}` },
                         { status: 400 }
@@ -460,6 +475,19 @@ const server = Bun.serve({
                 await redis.expire(`job:${jobId}`, JOB_TTL);
 
                 await releaseAgentSlot(jobId);
+
+                let params: Record<string, any> = {};
+                try { params = JSON.parse(job.params || "{}"); } catch { /* ignore */ }
+                const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
+
+                if (requestId) {
+                    setAiAgentWorkStatus(requestId, job.taskId, "failed").catch((e) => {
+                        console.error(
+                            `[API] background setAiAgentWorkStatus(failed) on cancel failed for requestId=${requestId}:`,
+                            e,
+                        );
+                    });
+                }
 
                 return Response.json({ ok: true, message: "Cancellation requested" });
             }
