@@ -6,6 +6,7 @@ Spawned as a subprocess by the orchestrator with DISPLAY already set.
 import sys
 import os
 import json
+import re
 import asyncio
 
 import httpx
@@ -26,6 +27,7 @@ async def notify_job_completed(
     error: str | None = None,
     cost_data: dict | None = None,
     source: str = "web",
+    partial_reasons: list[str] | None = None,
 ):
     """Fire-and-forget: tell the API the job is done so it can release the
     agent config slot and persist the agent work summary."""
@@ -42,6 +44,8 @@ async def notify_job_completed(
             payload["error"] = error
         if cost_data:
             payload["costData"] = cost_data
+        if partial_reasons:
+            payload["partialReasons"] = partial_reasons
 
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(
@@ -51,11 +55,67 @@ async def notify_job_completed(
         print(
             f"[{job_id}] Notified API of job completion "
             f"(status={status}, cost_included={cost_data is not None}, "
-            f"summary_len={len(summary) if summary else 0}, has_error={
-                error is not None})"
+            f"summary_len={len(summary) if summary else 0}, "
+            f"has_error={error is not None}, "
+            f"partial_reasons={len(partial_reasons)
+                               if partial_reasons else 0})"
         )
     except Exception as e:
         print(f"[{job_id}] Warning: failed to notify job completion: {e}")
+
+
+def resolve_final_status(result, job_id: str, r: redis.Redis) -> tuple[str, list[str]]:
+    """
+    Determine whether a successfully-returned agent run is actually 'done' or 'partial'.
+
+    Partial signals, in priority order:
+      1. Any entries in job:{id}:partial_reasons (pushed by wait_for_human on timeout,
+         and potentially other runtime events in the future).
+      2. Agent ran out of its max_steps budget without calling done.
+      3. Agent's final_result self-reports "Status: partial".
+
+    Returns (status, reasons). status is either 'done' or 'partial'.
+    """
+    reasons: list[str] = []
+
+    # 1. Runtime reasons pushed to Redis during the run
+    try:
+        raw = r.lrange(f"job:{job_id}:partial_reasons", 0, -1)
+        for item in raw:
+            reasons.append(item.decode() if isinstance(item, bytes) else item)
+    except Exception as e:
+        print(f"[{job_id}] Warning: could not read partial_reasons list: {e}")
+
+    # 2. Agent hit max_steps without calling done
+    is_done = True
+    try:
+        attr = getattr(result, "is_done", None)
+        if attr is not None:
+            is_done = attr() if callable(attr) else bool(attr)
+    except Exception as e:
+        print(f"[{job_id}] Warning: could not inspect is_done on result: {e}")
+    if not is_done:
+        reasons.append("max_steps_exceeded")
+
+    # 3. Safety-net: agent self-reported partial in its final summary
+    try:
+        final = (result.final_result() or "")
+        if re.search(r"status\s*:\s*partial", final, re.IGNORECASE):
+            if not any(x.startswith("agent_reported") for x in reasons):
+                reasons.append("agent_reported_partial")
+    except Exception as e:
+        print(f"[{job_id}] Warning: could not inspect final_result: {e}")
+
+    # Dedupe while preserving order
+    seen = set()
+    deduped = []
+    for item in reasons:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+
+    status = "partial" if deduped else "done"
+    return status, deduped
 
 
 def extract_cost_data(result) -> dict | None:
@@ -116,28 +176,37 @@ async def main():
 
     request_id = job_params.get("requestId")
     source = job.get("source", "web")
+    task_id = job.get("taskId", "")
 
-    print(f"""[{job_id}] Agent starting on DISPLAY={display}, {
-          len(tool_defs)} tools, params={list(job_params.keys())}, source={source}""")
+    print(
+        f"[{job_id}] Agent starting on DISPLAY={display}, task={task_id}, "
+        f"{len(tool_defs)} dynamic tools, params={list(job_params.keys())}, "
+        f"source={source}"
+    )
 
     try:
-        result = await run_agent(prompt, job_id, job_params, tool_defs, r)
+        result = await run_agent(prompt, job_id, job_params, tool_defs, r, task_id)
 
         cost_data = extract_cost_data(result)
-
         final_result = result.final_result() or "No result returned"
-        r.hset(f"job:{job_id}", mapping={
-               "status": "done", "result": final_result})
+
+        status, partial_reasons = resolve_final_status(result, job_id, r)
+
+        mapping = {"status": status, "result": final_result}
+        if partial_reasons:
+            mapping["partialReasons"] = json.dumps(partial_reasons)
+        r.hset(f"job:{job_id}", mapping=mapping)
         r.expire(f"job:{job_id}", JOB_TTL)
-        print(f"[{job_id}] Done")
+        print(f"[{job_id}] {status} (reasons={partial_reasons or 'none'})")
 
         await notify_job_completed(
             job_id=job_id,
             request_id=request_id,
-            status="done",
+            status=status,
             summary=final_result,
             cost_data=cost_data,
             source=source,
+            partial_reasons=partial_reasons or None,
         )
 
     except Exception as e:
